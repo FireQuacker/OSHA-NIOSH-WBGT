@@ -30,7 +30,7 @@ install_browser_engine()
 # =====================================================================
 # STREAMLIT CONFIGURATION & PERSISTENCE STATE
 # =====================================================================
-st.set_page_config(page_title="OSHA-WBGT Localized Calculator", layout="wide")
+st.set_page_config(page_title="OSHA-WBGT Effective Calculator", layout="wide")
 
 if "step" not in st.session_state:
     st.session_state.step = 1
