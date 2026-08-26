@@ -30,7 +30,7 @@ install_browser_engine()
 # =====================================================================
 # STREAMLIT CONFIGURATION & PERSISTENCE STATE
 # =====================================================================
-st.set_page_config(page_title="OSHA-WBGT Effective Calculator", layout="wide")
+st.set_page_config(page_title="OSHA-WBGT Localized Calculator", layout="wide")
 
 if "step" not in st.session_state:
     st.session_state.step = 1
@@ -56,6 +56,8 @@ if "caf_value" not in st.session_state:
     st.session_state.caf_value = 0.0
 if "caf_label" not in st.session_state:
     st.session_state.caf_label = "Standard Work Clothes (0.0 °F)"
+if "standard_choice" not in st.session_state:
+    st.session_state.standard_choice = "NIOSH"
 if "location_meta" not in st.session_state:
     st.session_state.location_meta = {}
 
@@ -152,15 +154,12 @@ def process_weather_noaa_csv(uploaded_file, target_date, start_hour, end_hour):
     df['DATE_raw'] = pd.to_datetime(df['DATE'], errors='coerce')
     df = df.dropna(subset=['DATE_raw'])
     
-    # Apply DST Adjustment Pipeline (March - November)
     is_dst = df['DATE_raw'].dt.month.between(3, 11)
     df['DST_Adjusted_Time'] = df['DATE_raw'].copy()
     df.loc[is_dst, 'DST_Adjusted_Time'] = df['DATE_raw'] + pd.Timedelta(hours=1)
     
-    # Reassign parsed date reference to the Adjusted Time for structural alignment with the rounding/window search
     df['DATE_parsed'] = df['DST_Adjusted_Time']
     
-    # Filter the dataset roughly around our target date 
     target_dt_start = datetime.combine(target_date, datetime.min.time())
     target_dt_end = target_dt_start + timedelta(days=1)
     
@@ -170,7 +169,6 @@ def process_weather_noaa_csv(uploaded_file, target_date, start_hour, end_hour):
     if df_day.empty:
         return {"error": f"No data found in the CSV for the selected date ({target_date.strftime('%Y-%m-%d')}). Please verify the file covers this timeframe."}
         
-    # Extract coordinates directly from CSV
     lat = float(df_day['LATITUDE'].iloc[0]) if 'LATITUDE' in df_day.columns and not pd.isna(df_day['LATITUDE'].iloc[0]) else 0.0
     lon = float(df_day['LONGITUDE'].iloc[0]) if 'LONGITUDE' in df_day.columns and not pd.isna(df_day['LONGITUDE'].iloc[0]) else 0.0
     station_name = df_day['NAME'].iloc[0] if 'NAME' in df_day.columns and not pd.isna(df_day['NAME'].iloc[0]) else "NOAA Local CSV Station"
@@ -192,7 +190,6 @@ def process_weather_noaa_csv(uploaded_file, target_date, start_hour, end_hour):
         window_start = target_time - timedelta(minutes=10)
         window_end = target_time + timedelta(minutes=10)
         
-        # Filter rows to the +/- 10 minute window
         df_window = df_day[(df_day['DATE_parsed'] >= window_start) & (df_day['DATE_parsed'] <= window_end)].copy()
         
         note_additions = []
@@ -221,14 +218,12 @@ def process_weather_noaa_csv(uploaded_file, target_date, start_hour, end_hour):
             last_rh = None
             last_wind = None
             
-            # Check for critical missing variables
             if raw_t is None or rh_val is None or w_val is None:
                 note_additions.append("Key variables missing. Suggest a run with Open-Meteo.")
                 skip_calc = True
             
             if raw_t is not None:
-                # Temperature on NOAA CSV files is frequently in Celsius (°C). Validate and convert to °F if needed.
-                if raw_t < 45.0:  # Indicative of Celsius scale in ambient weather contexts
+                if raw_t < 45.0:
                     last_temp = round((raw_t * 1.8) + 32.0, 1)
                     note_additions.append(f"NOAA Temp {raw_t}°C converted to {last_temp}°F")
                 else:
@@ -246,7 +241,6 @@ def process_weather_noaa_csv(uploaded_file, target_date, start_hour, end_hour):
             matched_ts = str(best_row['DATE'])
             calc_time = best_row['DST_Adjusted_Time'].strftime('%H:%M')
             
-            # Populate raw export row for the 3rd tab
             raw_export_rows.append({
                 "Target_Date": target_date.strftime("%Y-%m-%d"),
                 "Target_Hour": f"{hr:02d}:00",
@@ -396,7 +390,6 @@ def run_browser_automation(hourly_data, data_source_label):
                 status_text.text(f"Scraping OSHA Calculator for hour: {hour['time_display']} ({index+1}/{total_rows})...")
                 progress_bar.progress((index) / total_rows)
                 
-                # Check for skipped records early
                 if hour.get("skip_calc", False):
                     row_dict = {
                         "Date": hour["date_string_final"],
@@ -530,7 +523,6 @@ def run_browser_automation(hourly_data, data_source_label):
         st.session_state.fallback_active = True
         computed_results = []
         for index, hour in enumerate(hourly_data):
-            # Same safety check in the overall exception fallback branch
             if hour.get("skip_calc", False):
                 row_dict = {
                     "Date": hour["date_string_final"],
@@ -631,7 +623,6 @@ def generate_compliance_plot(results, worker_weight, is_forecast, use_caf, caf_l
     ax.plot(watts_range, limit_curve_f, color='crimson', linestyle='-', linewidth=2.5, label=limit_label)
     ax.plot(watts_range, alert_curve_f, color='darkorange', linestyle='--', linewidth=2.5, label=alert_label)
     
-    # Filter N/A results so the plot continues rendering successfully
     x_watts = [r["Adjusted_Watts"] for r in results if r["Sun_WBGT_F"] != "N/A"]
     y_sun = [r["Sun_WBGT_F"] for r in results if r["Sun_WBGT_F"] != "N/A"]
     y_shade = [r["Shade_WBGT_F"] for r in results if r["Shade_WBGT_F"] != "N/A"]
@@ -819,11 +810,12 @@ with st.expander("📖 How-To Guide: Running Heat Stress Assessments"):
 
     ---
     ### Step 2: Set Work Levels and Clothing
-    1. **Clothing Adjustment Factors**: Turns on the clothing adjustment option, check the [Clothing Adjustment Factors](https://www.osha.gov/heat-exposure/hazards#ClothingAdjustmentFactors) reference guide, and pick the matching outfit type.
-    2. **Choose how hard people are working**: 
+    1. **Pick your safety standard**: All calculations utilize the **NIOSH** Recommended Exposure Limits (REL) and Recommended Alert Limits (RAL).
+    2. **Clothing Adjustment Factors**: Turn on the clothing adjustment option, check the [Clothing Adjustment Factors](https://www.osha.gov/heat-exposure/hazards#ClothingAdjustmentFactors) reference guide, and pick the matching outfit type.
+    3. **Choose how hard people are working**: 
        * **Standard mode**: Pick simple activity levels for each hour (like Light, Moderate, or Heavy) from the dropdowns.
        * **Advanced mode**: If you prefer, enter specific metabolic energy values or worker details like age and height for a more tailored estimate. This is advanced and should only be used when familiar with these workload estimates.
-    3. **Run the calculation**: Click to start the analysis so the tool can run the numbers and check safety limits. This is done by running the [OSHA Outdoor WBGT Calculator](https://www.osha.gov/heat-exposure/wbgt-calculator) in the background and collecting the results.
+    4. **Run the calculation**: Click to start the analysis so the tool can run the numbers and check safety limits. This is done by running the [OSHA Outdoor WBGT Calculator](https://www.osha.gov/heat-exposure/wbgt-calculator) in the background and collecting the results.
 
     ---
     ### Step 3: Review Results and Download Reports
@@ -841,7 +833,7 @@ with st.expander("📚 Methodology, Data Sources & About the Author"):
     ### 🌤️ Weather Data & Meteorological Modeling
     After establishing coordinates, the application uses one of two methods for weather data:
     1.  **Open-Meteo API:** For both historical and future forecast data, the app interfaces with the Open-Meteo API. 
-        - **Historical Mode:** Uses the ERA5 global reanalysis dataset.
+        - **Historical Mode:** Uses the ERA5 global reanalysis dataset. If incident date is within 5-days of the current date, ERA5T Preliminary will be used.
         - **Forecast Mode:** Uses a blend of leading forecast models like NOAA's GFS and HRRR.
     2.  **NOAA Local CSV Upload:** Users can upload a CSV file from the NOAA NCEI database. The application intelligently parses this data, using the station's coordinates to determine the local time zone and automatically handle Daylight Saving Time (DST) for the given date.
 
@@ -1011,6 +1003,10 @@ if st.session_state.step == 1:
 elif st.session_state.step == 2:
     st.subheader("Step 2: Assign Hourly Worker Metabolism / Workloads")
     
+    st.markdown("### Heat Stress Standard")
+    st.info("ℹ️ **NIOSH Evaluation Active:** Computations will evaluate exposure against NIOSH Recommended Exposure Limits (REL) and Recommended Alert Limits (RAL).")
+    st.session_state.standard_choice = "NIOSH"
+    
     st.markdown("### Clothing & PPE Adjustment Factor (Optional)")
     use_caf = st.toggle("Apply Clothing Adjustment Factor (CAF)", value=st.session_state.use_caf)
     caf_value = 0.0
@@ -1114,11 +1110,16 @@ elif st.session_state.step == 2:
                     stn_name = st.session_state.location_meta.get("station_name", "Unknown Station")
                     data_source_label = f"NOAA LCD Station Data ({stn_name})"
                 else:
-                    data_source_label = (
-                        "Open-Meteo Forecast (NOAA HRRR / GFS Models)" 
-                        if st.session_state.is_forecast 
-                        else "Open-Meteo Archive (ERA5 / NOAA Station Reanalysis)"
-                    )
+                    if st.session_state.is_forecast:
+                        data_source_label = "Open-Meteo Forecast (NOAA HRRR / GFS Models)"
+                    else:
+                        target_dt_str = st.session_state.final_hourly_rows[0]["date_string_final"]
+                        target_dt = datetime.strptime(target_dt_str, "%m/%d/%Y").date()
+                        if (date.today() - target_dt).days < 6:
+                            data_source_label = "Open-Meteo Archive (Preliminary ERA5T / Recent Model Blend)"
+                        else:
+                            data_source_label = "Open-Meteo Archive (ERA5 / NOAA Station Reanalysis)"
+                            
                 results = run_browser_automation(st.session_state.final_hourly_rows, data_source_label)
                 
             if results:
