@@ -30,7 +30,7 @@ install_browser_engine()
 # =====================================================================
 # STREAMLIT CONFIGURATION & PERSISTENCE STATE
 # =====================================================================
-st.set_page_config(page_title="OSHA-WBGT Calculator with NIOSH REL/RAL Exposure Mapping", layout="wide")
+st.set_page_config(page_title="OSHA-NIOSH Localized Calculator", layout="wide")
 
 if "step" not in st.session_state:
     st.session_state.step = 1
@@ -56,8 +56,6 @@ if "caf_value" not in st.session_state:
     st.session_state.caf_value = 0.0
 if "caf_label" not in st.session_state:
     st.session_state.caf_label = "Standard Work Clothes (0.0 °F)"
-if "standard_choice" not in st.session_state:
-    st.session_state.standard_choice = "NIOSH"
 if "location_meta" not in st.session_state:
     st.session_state.location_meta = {}
 
@@ -81,42 +79,81 @@ def get_osha_tz_value(lon: float) -> str:
     elif lon >= -150.0: return "-9"
     else: return "-10"
 
-def geocode_address_native(address: str, mapbox_key: str = None) -> dict:
+def geocode_address_native(address: str, mapbox_key: str = None, is_general: bool = False) -> dict:
+    # 1. Try US Census Database (Highly accurate for exact street addresses; fails on City/State/Zip only)
+    if not is_general:
+        try:
+            census_url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+            census_params = {"address": address, "benchmark": "Public_AR_Current", "format": "json"}
+            census_response = requests.get(census_url, params=census_params, timeout=10)
+            
+            if census_response.status_code == 200:
+                data = census_response.json()
+                matches = data.get("result", {}).get("addressMatches", [])
+                if matches:
+                    coords = matches[0]["coordinates"]
+                    matched_str = matches[0].get("matchedAddress", address)
+                    return {"latitude": coords["y"], "longitude": coords["x"], "matched_address": matched_str}
+        except Exception:
+            pass
+
+    # 2. Try Nominatim (OpenStreetMap) Fallback (Excellent for City/State/Zip and general matching)
     try:
-        census_url = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
-        census_params = {"address": address, "benchmark": "Public_AR_Current", "format": "json"}
-        census_response = requests.get(census_url, params=census_params, timeout=10)
-        
-        if census_response.status_code == 200:
-            data = census_response.json()
-            matches = data.get("result", {}).get("addressMatches", [])
-            if matches:
-                coords = matches[0]["coordinates"]
-                matched_str = matches[0].get("matchedAddress", address)
-                return {"latitude": coords["y"], "longitude": coords["x"], "matched_address": matched_str}
+        nominatim_url = "https://nominatim.openstreetmap.org/search"
+        headers = {"User-Agent": "OSHA-NIOSH-App/1.0"}
+        nom_params = {"q": address, "format": "json", "addressdetails": 1, "limit": 1, "countrycodes": "us"}
+        nom_response = requests.get(nominatim_url, params=nom_params, headers=headers, timeout=10)
+        if nom_response.status_code == 200:
+            nom_data = nom_response.json()
+            if nom_data:
+                lat = float(nom_data[0]["lat"])
+                lon = float(nom_data[0]["lon"])
+                matched_str = nom_data[0].get("display_name", address)
+                return {"latitude": lat, "longitude": lon, "matched_address": matched_str}
     except Exception:
         pass
 
+    # 3. Try Open-Meteo Geocoding Fallback (Excellent for resolving just City/State)
+    if is_general:
+        try:
+            city_part = address.split(",")[0].strip()
+            om_url = "https://geocoding-api.open-meteo.com/v1/search"
+            om_params = {"name": city_part, "count": 1, "language": "en", "format": "json"}
+            om_response = requests.get(om_url, params=om_params, timeout=10)
+            if om_response.status_code == 200:
+                om_data = om_response.json()
+                results = om_data.get("results", [])
+                if results:
+                    lat = results[0]["latitude"]
+                    lon = results[0]["longitude"]
+                    country_admin = results[0].get('admin1', 'United States')
+                    matched_str = f"{results[0].get('name', city_part)}, {country_admin}"
+                    return {"latitude": lat, "longitude": lon, "matched_address": matched_str}
+        except Exception:
+            pass
+
+    # 4. Mapbox Fallback (If key is provided in secrets/env)
+    if mapbox_key:
+        try:
+            encoded_address = urllib.parse.quote(address)
+            mapbox_url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{encoded_address}.json"
+            mapbox_params = {"access_token": mapbox_key, "limit": 1}
+            mapbox_response = requests.get(mapbox_url, params=mapbox_params, timeout=10)
+            
+            if mapbox_response.status_code == 200:
+                data = mapbox_response.json()
+                features = data.get("features", [])
+                if features:
+                    coords = features[0]["center"]
+                    matched_str = features[0].get("place_name", address)
+                    return {"latitude": coords[1], "longitude": coords[0], "matched_address": matched_str}
+        except Exception as e:
+            return {"error": f"Mapbox Fallback System Error: {str(e)}"}
+
     if not mapbox_key:
-        return {"error": "US Census database could not pinpoint this address. Please verify address details or provide a MAPBOX_API_KEY in settings."}
+        return {"error": "Location coordinates could not be pinpointed via free geocoding tiers. Please ensure spelling is correct, or provide a MAPBOX_API_KEY."}
     
-    try:
-        encoded_address = urllib.parse.quote(address)
-        mapbox_url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{encoded_address}.json"
-        mapbox_params = {"access_token": mapbox_key, "limit": 1}
-        mapbox_response = requests.get(mapbox_url, params=mapbox_params, timeout=10)
-        
-        if mapbox_response.status_code == 200:
-            data = mapbox_response.json()
-            features = data.get("features", [])
-            if features:
-                coords = features[0]["center"]
-                matched_str = features[0].get("place_name", address)
-                return {"latitude": coords[1], "longitude": coords[0], "matched_address": matched_str}
-        
-        return {"error": "Location coordinates could not be resolved."}
-    except Exception as e:
-        return {"error": f"Mapbox Fallback System Error: {str(e)}"}
+    return {"error": "Location coordinates could not be resolved by any available geocoding provider."}
 
 def fetch_weather_native(lat: float, lon: float, date_str: str, is_forecast: bool) -> dict:
     url = "https://api.open-meteo.com/v1/forecast" if is_forecast else "https://archive-api.open-meteo.com/v1/archive"
@@ -314,12 +351,12 @@ def resolve_location(street: str, city: str, state: str, zip_code: str, mapbox_k
     general_address = ", ".join(general_parts)
     
     if street:
-        res1 = geocode_address_native(exact_address, mapbox_key)
+        res1 = geocode_address_native(exact_address, mapbox_key, is_general=False)
         if "error" not in res1:
             return res1, False, exact_address
             
     if general_address:
-        res2 = geocode_address_native(general_address, mapbox_key)
+        res2 = geocode_address_native(general_address, mapbox_key, is_general=True)
         if "error" not in res2:
             return res2, True, general_address
             
@@ -792,10 +829,10 @@ st.session_state.is_forecast = st.toggle(
 )
 
 if st.session_state.is_forecast:
-    st.title("🌤️ OSHA-WBGT Predictive Forecast Calculator")
+    st.title("🌤️ OSHA-NIOSH Predictive Forecast Calculator")
     st.warning("⚠️ **FORECAST WARNING:** This tool uses forecast models for future planning. On-site environmental tracking remains mandatory.")
 else:
-    st.title("☀️ OSHA-WBGT Localized Calculator")
+    st.title("☀️ OSHA-NIOSH Localized Calculator")
 
 st.markdown("**Occupational Heat Exposure Analytics by Andre Taylor**")
 st.divider()
@@ -810,12 +847,11 @@ with st.expander("📖 How-To Guide: Running Heat Stress Assessments"):
 
     ---
     ### Step 2: Set Work Levels and Clothing
-    1. **Pick your safety standard**: All calculations utilize the **NIOSH** Recommended Exposure Limits (REL) and Recommended Alert Limits (RAL).
-    2. **Clothing Adjustment Factors**: Turn on the clothing adjustment option, check the [Clothing Adjustment Factors](https://www.osha.gov/heat-exposure/hazards#ClothingAdjustmentFactors) reference guide, and pick the matching outfit type.
-    3. **Choose how hard people are working**: 
+    1. **Clothing Adjustment Factors**: Turn on the clothing adjustment option, check the [Clothing Adjustment Factors](https://www.osha.gov/heat-exposure/hazards#ClothingAdjustmentFactors) reference guide, and pick the matching outfit type.
+    2. **Choose how hard people are working**: 
        * **Standard mode**: Pick simple activity levels for each hour (like Light, Moderate, or Heavy) from the dropdowns.
        * **Advanced mode**: If you prefer, enter specific metabolic energy values or worker details like age and height for a more tailored estimate. This is advanced and should only be used when familiar with these workload estimates.
-    4. **Run the calculation**: Click to start the analysis so the tool can run the numbers and check safety limits. This is done by running the [OSHA Outdoor WBGT Calculator](https://www.osha.gov/heat-exposure/wbgt-calculator) in the background and collecting the results.
+    3. **Run the calculation**: Click to start the analysis so the tool can run the numbers and check safety limits. This is done by running the [OSHA Outdoor WBGT Calculator](https://www.osha.gov/heat-exposure/wbgt-calculator) in the background and collecting the results.
 
     ---
     ### Step 3: Review Results and Download Reports
@@ -1005,7 +1041,6 @@ elif st.session_state.step == 2:
     
     st.markdown("### Heat Stress Standard")
     st.info("ℹ️ **NIOSH Evaluation Active:** Computations will evaluate exposure against NIOSH Recommended Exposure Limits (REL) and Recommended Alert Limits (RAL).")
-    st.session_state.standard_choice = "NIOSH"
     
     st.markdown("### Clothing & PPE Adjustment Factor (Optional)")
     use_caf = st.toggle("Apply Clothing Adjustment Factor (CAF)", value=st.session_state.use_caf)
